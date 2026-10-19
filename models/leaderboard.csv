@@ -1,0 +1,4 @@
+timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,saved_path
+20261018_213356,RandomForest,enhanced,150,0.7829,0.0645,0.8667,models/versions/RandomForest_enhanced_20261018_213356.joblib
+20261018_213356,ExtraTrees,enhanced,150,0.8053,0.0640,0.8667,models/versions/ExtraTrees_enhanced_20261018_213356.joblib
+20261018_213356,SVM_RBF,enhanced,150,0.7538,0.0714,0.8359,models/versions/SVM_RBF_enhanced_20261018_213356.joblib

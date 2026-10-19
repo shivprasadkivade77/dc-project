@@ -7,7 +7,14 @@ authors = [
     { name = "shivprasadkivade77", email = "shivprasadkivade77@gmail.com" }
 ]
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "joblib>=1.5.3",
+    "librosa>=0.11.0",
+    "numpy>=2.0.2",
+    "pynput>=1.8.2",
+    "scikit-learn>=1.6.1",
+    "sounddevice>=0.5.6",
+]
 
 [project.scripts]
 holo = "holo:main"
