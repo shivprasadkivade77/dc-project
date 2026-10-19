@@ -5,24 +5,32 @@ import numpy as np
 import sounddevice as sd
 import joblib
 from pynput import keyboard
-from .config import SAMPLE_RATE, BLOCK_SIZE, RMS_THRESHOLD, MODEL_PATH
+from .config import CFG, SAMPLE_RATE, BLOCK_SIZE, MODEL_PATH
 from .detector import ImpulseDetector, get_input_channels
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector
 
-def run_listener(model_file: Path, threshold: float, confidence_min: float, dry_run: bool):
+def run_listener(model_file: Path, threshold: float | None, confidence_min: float | None, dry_run: bool):
     saved = joblib.load(model_file)
     model = saved["model"]
     triangulator = saved.get("triangulator", None)
-    fourier_weight = saved.get("fourier_weight", 0.50)
+    fourier_weight = saved.get("fourier_weight", CFG["hybrid_fusion"]["fourier_weight"])
     model_name = saved.get("model_name", "HybridModel")
     feature_set = saved["feature_set"]
     classes = saved["classes"]
     channels = get_input_channels()
 
+    lis_cfg = CFG["listener"]
+    default_conf = float(confidence_min if confidence_min is not None else lis_cfg.get("default_confidence", 0.65))
+    class_thresholds = lis_cfg.get("class_thresholds", {})
+    typing_suppression_window = float(lis_cfg.get("typing_suppression_seconds", 0.15))
+
+    mod_name = str(lis_cfg.get("os_modifier_key", "ctrl")).lower()
+    mod_key = keyboard.Key.cmd if mod_name == "cmd" else keyboard.Key.ctrl
+    shortcuts_map = lis_cfg.get("shortcuts", {"left_tap": "c", "right_tap": "v"})
+
     kb_controller = keyboard.Controller()
     last_keypress_time = 0.0
-    typing_suppression_window = 0.15
 
     def on_press(key):
         nonlocal last_keypress_time
@@ -32,23 +40,21 @@ def run_listener(model_file: Path, threshold: float, confidence_min: float, dry_
     kb_listener.start()
 
     def trigger_macro(action_label: str):
-        if dry_run:
-            print(f"  [DRY-RUN] Would trigger macOS shortcut for: {action_label}")
+        target_key = shortcuts_map.get(action_label)
+        if not target_key:
             return
-        if action_label == "left_tap":
-            print("  >>> ACTION: Left Palm Rest -> Copy (Cmd+C)")
-            with kb_controller.pressed(keyboard.Key.cmd):
-                kb_controller.tap("c")
-        elif action_label == "right_tap":
-            print("  >>> ACTION: Right Palm Rest -> Paste (Cmd+V)")
-            with kb_controller.pressed(keyboard.Key.cmd):
-                kb_controller.tap("v")
+        if dry_run:
+            print(f"  [DRY-RUN] Would trigger {mod_name.upper()}+{target_key.upper()} for: {action_label}")
+            return
+        print(f"  >>> ACTION: {action_label} -> {mod_name.upper()}+{target_key.upper()}")
+        with kb_controller.pressed(mod_key):
+            kb_controller.tap(target_key)
 
     detector = ImpulseDetector(threshold=threshold)
-    mode_label = "DRY-RUN TEST MODE" if dry_run else "LIVE MACRO MODE"
+    mode_label = "DRY-RUN TEST MODE" if dry_run else f"LIVE MACRO MODE ({mod_name.upper()})"
     print(f"\n[LISTEN - {mode_label}] Loaded {model_name} from {model_file.name}")
-    print(f"Fusion: {int((1-fourier_weight)*100)}% ML + {int(fourier_weight*100)}% Fourier Triangulation | Mic Channels: {channels}")
-    print(f"Confidence Threshold: {confidence_min:.2f} | Tap left or right palm rest. Press Ctrl+C to stop.\n")
+    print(f"Fusion: {int((1-fourier_weight)*100)}% ML + {int(fourier_weight*100)}% Fourier | Thresholds: {class_thresholds} (Default: {default_conf:.2f})")
+    print("Tap left or right palm rest. Press Ctrl+C to stop.\n")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
@@ -80,17 +86,18 @@ def run_listener(model_file: Path, threshold: float, confidence_min: float, dry_
             pred_label = classes[pred_idx]
             latency_ms = (time.perf_counter() - t0) * 1000
 
-            print(f"Pred: {pred_label:10s} | Hybrid Conf: {confidence:.2f} [{breakdown}] | {latency_ms:.1f} ms")
+            req_conf = float(class_thresholds.get(pred_label, default_conf))
+            print(f"Pred: {pred_label:10s} | Conf: {confidence:.2f} (Req: {req_conf:.2f}) [{breakdown}] | {latency_ms:.1f} ms")
 
-            if pred_label != "noise" and confidence >= confidence_min:
+            if pred_label != "noise" and confidence >= req_conf:
                 trigger_macro(pred_label)
                 last_keypress_time = time.time()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test or run a trained AcousticTap hybrid model")
-    parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to a .joblib model file")
-    parser.add_argument("--threshold", type=float, default=RMS_THRESHOLD, help="Mic RMS trigger threshold")
-    parser.add_argument("--confidence", type=float, default=0.65, help="Minimum confidence to trigger")
-    parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing macOS shortcuts")
+    parser = argparse.ArgumentParser(description="Test or run AcousticTap listener configured via config/config.yaml")
+    parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to .joblib model file")
+    parser.add_argument("--threshold", type=float, default=None, help="Override config.yaml RMS threshold")
+    parser.add_argument("--confidence", type=float, default=None, help="Override config.yaml confidence threshold")
+    parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing shortcuts")
     args = parser.parse_args()
     run_listener(args.model, args.threshold, args.confidence, args.dry_run)
