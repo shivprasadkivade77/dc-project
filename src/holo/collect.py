@@ -2,20 +2,21 @@ import argparse
 import numpy as np
 import sounddevice as sd
 from .config import SAMPLE_RATE, BLOCK_SIZE, RMS_THRESHOLD, DATA_DIR, CLASSES
-from .detector import ImpulseDetector
+from .detector import ImpulseDetector, get_input_channels
 
 def collect_data(label: str, num_samples: int, threshold: float):
     save_dir = DATA_DIR / label
     save_dir.mkdir(parents=True, exist_ok=True)
     existing = len(list(save_dir.glob("*.npy")))
+    channels = get_input_channels()
 
     detector = ImpulseDetector(threshold=threshold)
-    print(f"\n[COLLECT] Recording {num_samples} samples for '{label}'...")
+    print(f"\n[COLLECT] Recording {num_samples} samples for '{label}' (Channels: {channels})...")
     print("Tap firmly on the target zone whenever ready. Press Ctrl+C to stop.\n")
 
     count = 0
     with sd.InputStream(
-        samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=1, callback=detector.audio_callback
+        samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
     ):
         while count < num_samples:
             waveform = detector.event_queue.get()
