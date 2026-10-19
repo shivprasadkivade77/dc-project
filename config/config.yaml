@@ -13,7 +13,7 @@ audio:
   channels: "auto"              # "auto", 1 (mono), or 2 (stereo)
 
 detector:
-  rms_threshold: 0.014          # Base microphone RMS trigger threshold
+  rms_threshold: 0.02          # Base microphone RMS trigger threshold
   peak_multiplier: 1.8          # Peak amplitude must exceed rms_threshold * peak_multiplier
   bg_snr_ratio: 2.3             # RMS must exceed rolling background floor * bg_snr_ratio
   bg_ema_alpha: 0.95            # Exponential moving average decay for background noise floor

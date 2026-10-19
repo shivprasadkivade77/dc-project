@@ -11,6 +11,7 @@ build/
 
 # AcousticTap local datasets and saved model binaries
 dataset/
+models/
 *.npy
 *.joblib
 

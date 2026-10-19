@@ -5,3 +5,9 @@ timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,sav
 20261019_152054,Hybrid_RandomForest,enhanced,314,0.8615,0.7013,0.8359,0.8312,models/versions/Hybrid_RandomForest_enhanced_20261019_152054.joblib
 20261019_152054,Hybrid_ExtraTrees,enhanced,314,0.8895,0.7013,0.8359,0.8459,models/versions/Hybrid_ExtraTrees_enhanced_20261019_152054.joblib
 20261019_152054,Hybrid_SVM_RBF,enhanced,314,0.8708,0.7013,0.8549,0.8312,models/versions/Hybrid_SVM_RBF_enhanced_20261019_152054.joblib
+20261019_164256,Hybrid_SVM_RBF,enhanced,314,0.8738,0.6982,0.8523,0.8427,0.50,models/versions/Hybrid_SVM_RBF_enhanced_20261019_164256.joblib
+20261019_164256,Hybrid_RandomForest,enhanced,314,0.8651,0.6982,0.8303,0.8312,0.50,models/versions/Hybrid_RandomForest_enhanced_20261019_164256.joblib
+20261019_164256,Hybrid_ExtraTrees,enhanced,314,0.8864,0.6982,0.8268,0.8283,0.50,models/versions/Hybrid_ExtraTrees_enhanced_20261019_164256.joblib
+20261019_165703,Hybrid_SVM_RBF,enhanced,589,0.8822,0.7427,0.8771,0.8879,0.50,models/versions/Hybrid_SVM_RBF_enhanced_20261019_165703.joblib
+20261019_165703,Hybrid_RandomForest,enhanced,589,0.8890,0.7427,0.8591,0.8891,0.50,models/versions/Hybrid_RandomForest_enhanced_20261019_165703.joblib
+20261019_165703,Hybrid_ExtraTrees,enhanced,589,0.9022,0.7427,0.8392,0.8804,0.50,models/versions/Hybrid_ExtraTrees_enhanced_20261019_165703.joblib

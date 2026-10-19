@@ -1,27 +1,28 @@
-# AcousticTap Hybrid Test Report (20261019_152054)
+# AcousticTap Hybrid Test Report (20261019_165703)
 
 - **Winning Architecture:** `Hybrid_SVM_RBF` (50% ML + 50% Fourier Transform Triangulation)
-- **Total Dataset Samples:** 314
-- **5-Fold Cross-Validation Macro F1:** `0.8549`
-- **Holdout Test Accuracy:** `82.54%`
+- **Best Tuned Hyperparameters:** `{'clf__C': 5.0, 'clf__class_weight': {0: 1.3, 1: 1.0, 2: 1.0}, 'clf__gamma': 'scale'}`
+- **Total Dataset Samples:** 589
+- **5-Fold Cross-Validation Macro F1:** `0.8771`
+- **Holdout Test Accuracy:** `88.98%`
 
 ## Holdout Classification Report
 ```text
               precision    recall  f1-score   support
 
-    left_tap       0.77      0.74      0.76        23
-   right_tap       1.00      0.90      0.95        20
-       noise       0.74      0.85      0.79        20
+    left_tap       0.92      0.84      0.88        43
+   right_tap       0.89      0.97      0.93        40
+       noise       0.86      0.86      0.86        35
 
-    accuracy                           0.83        63
-   macro avg       0.84      0.83      0.83        63
-weighted avg       0.83      0.83      0.83        63
+    accuracy                           0.89       118
+   macro avg       0.89      0.89      0.89       118
+weighted avg       0.89      0.89      0.89       118
 
 ```
 
 ## Confusion Matrix (`['left_tap', 'right_tap', 'noise']`)
 ```text
-[[17  0  6]
- [ 2 18  0]
- [ 3  0 17]]
+[[36  2  5]
+ [ 1 39  0]
+ [ 2  3 30]]
 ```
