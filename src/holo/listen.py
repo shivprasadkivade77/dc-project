@@ -1,103 +1,48 @@
 import time
-import argparse
-from pathlib import Path
+import joblib
 import numpy as np
 import sounddevice as sd
-import joblib
-from pynput import keyboard
-from .config import CFG, SAMPLE_RATE, BLOCK_SIZE, MODEL_PATH
-from .detector import ImpulseDetector, get_input_channels
+from .config import BLOCK_SIZE, CALIBRATION_BLOCKS, CONFIDENCE_THRESHOLD, ENABLE_SHORTCUTS, MODEL_PATH, SAMPLE_RATE, ULTRASONIC_2FA_ENABLED, ULTRASONIC_ENABLED
+from .detector import ImpulseDetector
 from .features import extract_features
-from .triangulation import extract_fourier_triangulation_vector
+from .ultrasonic import UltrasonicSonarGate
 
-def run_listener(model_file: Path, threshold: float | None, confidence_min: float | None, dry_run: bool):
-    saved = joblib.load(model_file)
-    model = saved["model"]
-    triangulator = saved.get("triangulator", None)
-    fourier_weight = saved.get("fourier_weight", CFG["hybrid_fusion"]["fourier_weight"])
-    model_name = saved.get("model_name", "HybridModel")
-    feature_set = saved["feature_set"]
-    classes = saved["classes"]
-    channels = get_input_channels()
-
-    lis_cfg = CFG["listener"]
-    default_conf = float(confidence_min if confidence_min is not None else lis_cfg.get("default_confidence", 0.65))
-    class_thresholds = lis_cfg.get("class_thresholds", {})
-    typing_suppression_window = float(lis_cfg.get("typing_suppression_seconds", 0.15))
-
-    mod_name = str(lis_cfg.get("os_modifier_key", "ctrl")).lower()
-    mod_key = keyboard.Key.cmd if mod_name == "cmd" else keyboard.Key.ctrl
-    shortcuts_map = lis_cfg.get("shortcuts", {"left_tap": "c", "right_tap": "v"})
-
-    kb_controller = keyboard.Controller()
-    last_keypress_time = 0.0
-
-    def on_press(key):
-        nonlocal last_keypress_time
-        last_keypress_time = time.time()
-
-    kb_listener = keyboard.Listener(on_press=on_press)
-    kb_listener.start()
-
-    def trigger_macro(action_label: str):
-        target_key = shortcuts_map.get(action_label)
-        if not target_key:
-            return
-        if dry_run:
-            print(f"  [DRY-RUN] Would trigger {mod_name.upper()}+{target_key.upper()} for: {action_label}")
-            return
-        print(f"  >>> ACTION: {action_label} -> {mod_name.upper()}+{target_key.upper()}")
-        with kb_controller.pressed(mod_key):
-            kb_controller.tap(target_key)
-
-    detector = ImpulseDetector(threshold=threshold)
-    mode_label = "DRY-RUN TEST MODE" if dry_run else f"LIVE MACRO MODE ({mod_name.upper()})"
-    print(f"\n[LISTEN - {mode_label}] Loaded {model_name} from {model_file.name}")
-    print(f"Fusion: {int((1-fourier_weight)*100)}% ML + {int(fourier_weight*100)}% Fourier | Thresholds: {class_thresholds} (Default: {default_conf:.2f})")
-    print("Tap left or right palm rest. Press Ctrl+C to stop.\n")
-
-    with sd.InputStream(
-        samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=channels, callback=detector.audio_callback
-    ):
-        while True:
-            waveform = detector.event_queue.get()
-
-            if (time.time() - last_keypress_time) < typing_suppression_window:
-                print("  [Ignored: Active keyboard typing]")
-                continue
-
-            t0 = time.perf_counter()
-            ml_feats = extract_features(waveform, feature_set=feature_set).reshape(1, -1)
-            p_ml = model.predict_proba(ml_feats)[0]
-
-            if triangulator is not None:
-                fourier_feats = extract_fourier_triangulation_vector(waveform).reshape(1, -1)
-                p_fourier = triangulator.predict_proba(fourier_feats)[0]
-                probs = (1.0 - fourier_weight) * p_ml + fourier_weight * p_fourier
-                fourier_top = classes[int(np.argmax(p_fourier))]
-                ml_top = classes[int(np.argmax(p_ml))]
-                breakdown = f"ML:{ml_top}({np.max(p_ml):.2f}) + FFT:{fourier_top}({np.max(p_fourier):.2f})"
-            else:
-                probs = p_ml
-                breakdown = "ML-Only"
-
-            pred_idx = int(np.argmax(probs))
-            confidence = float(probs[pred_idx])
-            pred_label = classes[pred_idx]
-            latency_ms = (time.perf_counter() - t0) * 1000
-
-            req_conf = float(class_thresholds.get(pred_label, default_conf))
-            print(f"Pred: {pred_label:10s} | Conf: {confidence:.2f} (Req: {req_conf:.2f}) [{breakdown}] | {latency_ms:.1f} ms")
-
-            if pred_label != "noise" and confidence >= req_conf:
-                trigger_macro(pred_label)
-                last_keypress_time = time.time()
+def run_listener():
+    if not MODEL_PATH.exists():
+        raise FileNotFoundError(f"Model not found at {MODEL_PATH}. Run train first.")
+    bundle = joblib.load(MODEL_PATH)
+    model, triangulator, fourier_weight, classes = bundle["model"], bundle["triangulator"], float(bundle.get("fourier_weight", 0.50)), list(bundle["classes"])
+    detector, sonar = ImpulseDetector(sr=SAMPLE_RATE), UltrasonicSonarGate(sr=SAMPLE_RATE)
+    if ULTRASONIC_ENABLED:
+        sonar.start_emitter()
+        print("[Sonar] Emitter active. Keep hands off palm rests for calibration...")
+    try:
+        with sd.InputStream(samplerate=SAMPLE_RATE, channels=1, dtype="float32", blocksize=BLOCK_SIZE, callback=detector.audio_callback):
+            if ULTRASONIC_ENABLED:
+                while len(detector.calibration_buffer) < CALIBRATION_BLOCKS: time.sleep(0.05)
+                sonar.calibrate_baseline(list(detector.calibration_buffer))
+                print("[Sonar] Calibration locked! Ready for taps.")
+            while True:
+                try:
+                    raw_waveform = detector.event_queue.get(timeout=0.1)
+                except Exception:
+                    continue
+                p_v2 = (1.0 - fourier_weight) * model.predict_proba(extract_features(raw_waveform, sr=SAMPLE_RATE).reshape(1, -1))[0] + fourier_weight * triangulator.predict_proba(raw_waveform)[0]
+                probs = {cls: float(p_v2[i]) for i, cls in enumerate(classes)}
+                us = sonar.evaluate_window(raw_waveform)
+                if ULTRASONIC_ENABLED and ULTRASONIC_2FA_ENABLED and us["active"]:
+                    for k in probs:
+                        if "left" in k: probs[k] *= (0.5 + 0.5 * us["gate_left"])
+                        elif "right" in k: probs[k] *= (0.5 + 0.5 * us["gate_right"])
+                pred_cls = max(probs, key=probs.get)
+                if "noise" not in pred_cls and probs[pred_cls] >= CONFIDENCE_THRESHOLD:
+                    print(f">>> TRIGGER: {pred_cls.upper()} | Conf: {probs[pred_cls]:.2f} | Gates L/R: {us['gate_left']:.2f}/{us['gate_right']:.2f}")
+                else:
+                    print(f"    [Rejected] Pred: {pred_cls} ({probs[pred_cls]:.2f}) | Gates L/R: {us['gate_left']:.2f}/{us['gate_right']:.2f}")
+    except KeyboardInterrupt:
+        print("Stopping listener...")
+    finally:
+        sonar.stop_emitter()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Test or run AcousticTap listener configured via config/config.yaml")
-    parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to .joblib model file")
-    parser.add_argument("--threshold", type=float, default=None, help="Override config.yaml RMS threshold")
-    parser.add_argument("--confidence", type=float, default=None, help="Override config.yaml confidence threshold")
-    parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing shortcuts")
-    args = parser.parse_args()
-    run_listener(args.model, args.threshold, args.confidence, args.dry_run)
+    run_listener()

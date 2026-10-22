@@ -1,145 +1,86 @@
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.preprocessing import StandardScaler
-from .config import CFG, SAMPLE_RATE
+from .config import SAMPLE_RATE, LOWPASS_CUTOFF_HZ
+from .ultrasonic import lowpass_for_v2, UltrasonicSonarGate
 
-def align_and_slice_waveform(waveform: np.ndarray):
-    win_cfg = CFG["signal_window"]
-    s_start_cfg = int(win_cfg["search_start_samples"])
-    s_end_margin = int(win_cfg["search_end_margin"])
-    pre_guard = int(win_cfg["pre_noise_guard_samples"])
-    pre_peak = int(win_cfg["onset_pre_peak_samples"])
-    onset_len = int(win_cfg["onset_length_samples"])
-    wake_len = int(win_cfg["wake_length_samples"])
+_SONAR_HELPER = UltrasonicSonarGate(sr=SAMPLE_RATE)
 
-    mono = np.mean(waveform, axis=1) if waveform.ndim == 2 else waveform
-    mono = np.asarray(mono, dtype=np.float64)
+def align_and_slice_waveform(waveform, sr=SAMPLE_RATE, pre_ms=8.0, post_ms=35.0):
+    raw = np.asarray(waveform, dtype=np.float32).flatten()
+    lf = lowpass_for_v2(raw, sr=sr, cutoff_hz=LOWPASS_CUTOFF_HZ)
+    peak_idx = int(np.argmax(np.abs(lf)))
+    pre_samples = max(1, int((pre_ms / 1000.0) * sr))
+    post_samples = max(1, int((post_ms / 1000.0) * sr))
+    target_len = pre_samples + post_samples
+    start = max(0, peak_idx - pre_samples)
+    end = min(len(lf), peak_idx + post_samples)
+    sliced = lf[start:end]
+    if len(sliced) < target_len:
+        pad_left = max(0, pre_samples - peak_idx)
+        pad_right = max(0, target_len - len(sliced) - pad_left)
+        sliced = np.pad(sliced, (pad_left, pad_right), mode="constant")
+    noise_end = max(16, peak_idx - pre_samples)
+    pre_noise = lf[:noise_end] if noise_end <= len(lf) else lf[:16]
+    return sliced.astype(np.float32), pre_noise.astype(np.float32)
 
-    search_start = min(s_start_cfg, len(mono) // 6)
-    search_end = max(search_start + 512, len(mono) - s_end_margin)
-    peak_idx = search_start + int(np.argmax(np.abs(mono[search_start:search_end])))
-
-    noise_end = max(128, peak_idx - pre_guard)
-    pre_noise = mono[:noise_end]
-
-    onset_start = max(0, peak_idx - pre_peak)
-    onset = mono[onset_start : onset_start + onset_len]
-    if len(onset) < onset_len:
-        onset = np.pad(onset, (0, onset_len - len(onset)))
-
-    wake_start = max(0, peak_idx - pre_peak)
-    wake = mono[wake_start : wake_start + wake_len]
-    if len(wake) < wake_len:
-        wake = np.pad(wake, (0, wake_len - len(wake)))
-
-    return mono, peak_idx, pre_noise, onset, wake
-
-def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
-    ft_cfg = CFG["fourier_triangulation"]
-    num_bands = int(ft_cfg["num_bands"])
-    f_min = float(ft_cfg["freq_min_hz"])
-    f_max = float(ft_cfg["freq_max_hz"])
-    hf_low, hf_high = float(ft_cfg["hf_band_hz"][0]), float(ft_cfg["hf_band_hz"][1])
-    lf_low, lf_high = float(ft_cfg["lf_band_hz"][0]), float(ft_cfg["lf_band_hz"][1])
-    max_lag = int(ft_cfg["gcc_max_lag_samples"])
-
-    mono, peak_idx, pre_noise, onset, wake = align_and_slice_waveform(waveform)
-
-    peak_amp = np.max(np.abs(wake)) + 1e-8
-    norm_onset = (onset / peak_amp) * np.hanning(len(onset))
-    norm_wake = (wake / peak_amp) * np.hanning(len(wake))
-
-    fft_onset = np.fft.rfft(norm_onset)
-    mag_onset = np.abs(fft_onset) + 1e-8
-    freqs_onset = np.fft.rfftfreq(len(norm_onset), d=1.0 / sr)
-
-    band_edges = np.geomspace(f_min, f_max, num=num_bands + 1)
-    onset_band_energies = []
-    for i in range(num_bands):
-        mask = (freqs_onset >= band_edges[i]) & (freqs_onset < band_edges[i + 1])
-        onset_band_energies.append(np.log10(np.mean(mag_onset[mask] ** 2) + 1e-10) if np.any(mask) else -10.0)
-
-    fft_wake = np.fft.rfft(norm_wake)
-    mag_wake = np.abs(fft_wake) + 1e-8
-    freqs_wake = np.fft.rfftfreq(len(norm_wake), d=1.0 / sr)
-
-    wake_band_energies = []
-    for i in range(num_bands):
-        mask = (freqs_wake >= band_edges[i]) & (freqs_wake < band_edges[i + 1])
-        wake_band_energies.append(np.log10(np.mean(mag_wake[mask] ** 2) + 1e-10) if np.any(mask) else -10.0)
-
-    # Sub-band ratios between neighboring resonance bands (captures spatial node shifts)
-    band_diffs = list(np.diff(wake_band_energies))
-
-    # Lamb-Wave Dispersion Delay
-    hf_fft = np.where((freqs_wake >= hf_low) & (freqs_wake <= hf_high), fft_wake, 0.0)
-    lf_fft = np.where((freqs_wake >= lf_low) & (freqs_wake <= lf_high), fft_wake, 0.0)
-    hf_time_env = np.abs(np.fft.irfft(hf_fft))
-    lf_time_env = np.abs(np.fft.irfft(lf_fft))
-
-    hf_arrival = int(np.argmax(hf_time_env[:256]))
-    lf_arrival = int(np.argmax(lf_time_env[:256]))
-    dispersion_lag_ms = ((lf_arrival - hf_arrival) / sr) * 1000.0
-    hf_to_lf_ratio = float(np.log10((np.sum(hf_time_env ** 2) + 1e-8) / (np.sum(lf_time_env ** 2) + 1e-8)))
-
-    unwrapped_phase = np.unwrap(np.angle(fft_onset))
-    group_delay = -np.diff(unwrapped_phase)
-    gd_low = float(np.mean(group_delay[1:8]))
-    gd_mid = float(np.mean(group_delay[8:32]))
-    gd_high = float(np.mean(group_delay[32:min(90, len(group_delay))]))
-
-    snr_db = float(10.0 * np.log10((np.mean(onset ** 2) + 1e-10) / (np.mean(pre_noise ** 2) + 1e-10)))
-
-    if waveform.ndim == 2 and waveform.shape[1] >= 2:
-        ch_l = waveform[max(0, peak_idx - 32) : max(0, peak_idx - 32) + 512, 0]
-        ch_r = waveform[max(0, peak_idx - 32) : max(0, peak_idx - 32) + 512, 1]
-        F_l = np.fft.rfft(ch_l, n=1024)
-        F_r = np.fft.rfft(ch_r, n=1024)
-        cross_spec = F_l * np.conj(F_r)
-        gcc_phat = np.fft.irfft(cross_spec / (np.abs(cross_spec) + 1e-8), n=1024)
-        gcc_shifted = np.fft.fftshift(gcc_phat)
-        center = len(gcc_shifted) // 2
-        lag_samples = int(np.argmax(gcc_shifted[center - max_lag : center + max_lag + 1])) - max_lag
-        ild_db = float(10.0 * np.log10((np.sum(ch_l ** 2) + 1e-8) / (np.sum(ch_r ** 2) + 1e-8)))
-    else:
-        lag_samples = 0.0
-        ild_db = 0.0
-
-    return np.array(
-        onset_band_energies
-        + wake_band_energies
-        + band_diffs
-        + [dispersion_lag_ms, hf_to_lf_ratio, gd_low, gd_mid, gd_high, snr_db, float(lag_samples), ild_db],
-        dtype=np.float64
-    )
+def extract_fourier_triangulation_vector(waveform, sr=SAMPLE_RATE, n_bins=48):
+    raw = np.asarray(waveform, dtype=np.float32).flatten()
+    aligned_lf, _ = align_and_slice_waveform(raw, sr=sr)
+    n = len(aligned_lf)
+    windowed = aligned_lf * np.hanning(n)
+    fft_complex = np.fft.rfft(windowed)
+    mag = np.abs(fft_complex) + 1e-9
+    phase = np.unwrap(np.angle(fft_complex))
+    freqs = np.fft.rfftfreq(n, d=1.0 / sr)
+    valid_mask = freqs <= LOWPASS_CUTOFF_HZ
+    mag_valid = mag[valid_mask]
+    phase_valid = phase[valid_mask]
+    indices = np.array_split(np.arange(len(mag_valid)), n_bins)
+    pooled_mag = np.array([np.mean(np.log1p(mag_valid[idx])) for idx in indices if len(idx) > 0], dtype=np.float32)
+    if len(pooled_mag) < n_bins:
+        pooled_mag = np.pad(pooled_mag, (0, n_bins - len(pooled_mag)))
+    pooled_mag = pooled_mag / (np.linalg.norm(pooled_mag) + 1e-9)
+    early_len = max(8, n // 4)
+    early_spec = np.abs(np.fft.rfft(aligned_lf[:early_len] * np.hanning(early_len)))
+    early_freqs = np.fft.rfftfreq(early_len, d=1.0 / sr)
+    hf_early = float(np.mean(early_spec[(early_freqs >= 2500) & (early_freqs <= 12000)] + 1e-9))
+    lf_early = float(np.mean(early_spec[(early_freqs >= 150) & (early_freqs < 2500)] + 1e-9))
+    dispersion_ratio = np.log(hf_early / lf_early)
+    d_phase = np.diff(phase_valid) if len(phase_valid) > 2 else np.zeros(1, dtype=np.float32)
+    phase_stats = np.array([float(np.mean(d_phase)), float(np.std(d_phase)), float(dispersion_ratio)], dtype=np.float32)
+    ultra_vec = _SONAR_HELPER.extract_ultrasonic_feature_vector(raw)
+    return np.concatenate([pooled_mag, phase_stats, ultra_vec]).astype(np.float32)
 
 class FourierTriangulator:
-    def __init__(self):
-        ft_cfg = CFG["fourier_triangulation"]
-        self.lda_weight = float(ft_cfg.get("lda_weight", 0.65))
-        self.cos_temp = float(ft_cfg.get("cosine_temperature", 2.5))
+    def __init__(self, sr=SAMPLE_RATE):
+        self.sr = sr
         self.scaler = StandardScaler()
-        self.lda = LinearDiscriminantAnalysis(
-            solver=ft_cfg.get("lda_solver", "lsqr"),
-            shrinkage=ft_cfg.get("lda_shrinkage", "auto")
-        )
-        self.centroids = None
+        self.lda = LinearDiscriminantAnalysis(solver="lsqr", shrinkage="auto")
+        self.classes_ = None
+        self.templates_ = {}
 
-    def fit(self, X_fourier: np.ndarray, y: np.ndarray):
-        X_scaled = self.scaler.fit_transform(X_fourier)
+    def fit(self, waveforms, y):
+        X_four = np.vstack([extract_fourier_triangulation_vector(w, sr=self.sr) for w in waveforms])
+        self.classes_ = np.unique(y)
+        X_scaled = self.scaler.fit_transform(X_four)
         self.lda.fit(X_scaled, y)
-        classes = np.unique(y)
-        self.centroids = np.array([np.mean(X_scaled[y == c], axis=0) for c in classes])
+        for cls in self.classes_:
+            cls_vecs = X_scaled[y == cls]
+            mean_vec = np.mean(cls_vecs, axis=0)
+            self.templates_[cls] = mean_vec / (np.linalg.norm(mean_vec) + 1e-9)
         return self
 
-    def predict_proba(self, X_fourier: np.ndarray) -> np.ndarray:
-        X_scaled = self.scaler.transform(X_fourier)
+    def predict_proba(self, waveforms):
+        if isinstance(waveforms, np.ndarray) and waveforms.ndim == 1:
+            waveforms = [waveforms]
+        X_four = np.vstack([extract_fourier_triangulation_vector(w, sr=self.sr) for w in waveforms])
+        X_scaled = self.scaler.transform(X_four)
         lda_probs = self.lda.predict_proba(X_scaled)
-
-        norm_x = X_scaled / (np.linalg.norm(X_scaled, axis=1, keepdims=True) + 1e-8)
-        norm_c = self.centroids / (np.linalg.norm(self.centroids, axis=1, keepdims=True) + 1e-8)
-        cos_sim = np.dot(norm_x, norm_c.T) * self.cos_temp
-        exp_sim = np.exp(cos_sim - np.max(cos_sim, axis=1, keepdims=True))
-        cos_probs = exp_sim / np.sum(exp_sim, axis=1, keepdims=True)
-
-        return self.lda_weight * lda_probs + (1.0 - self.lda_weight) * cos_probs
+        sim_matrix = np.zeros((len(X_scaled), len(self.classes_)), dtype=np.float64)
+        for j, cls in enumerate(self.classes_):
+            norms = np.linalg.norm(X_scaled, axis=1) + 1e-9
+            cos_sim = np.dot(X_scaled, self.templates_[cls]) / norms
+            sim_matrix[:, j] = np.exp(3.0 * cos_sim)
+        sim_probs = sim_matrix / (np.sum(sim_matrix, axis=1, keepdims=True) + 1e-9)
+        return 0.70 * lda_probs + 0.30 * sim_probs

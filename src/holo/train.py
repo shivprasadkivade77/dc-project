@@ -1,266 +1,138 @@
 import csv
-import argparse
 from datetime import datetime
-import numpy as np
+from pathlib import Path
 import joblib
-from sklearn.base import clone
-from sklearn.ensemble import RandomForestClassifier, ExtraTreesClassifier
-from sklearn.svm import SVC
-from sklearn.preprocessing import StandardScaler
+import librosa
+import numpy as np
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
+from sklearn.metrics import accuracy_score, classification_report, confusion_matrix, f1_score
+from sklearn.model_selection import StratifiedKFold, train_test_split
 from sklearn.pipeline import Pipeline
-from sklearn.model_selection import StratifiedKFold, GridSearchCV, train_test_split
-from sklearn.metrics import classification_report, confusion_matrix, f1_score, accuracy_score
-from .config import CFG, DATA_DIR, MODEL_DIR, VERSIONS_DIR, RESULTS_DIR, MODEL_PATH, CLASSES
+from sklearn.preprocessing import StandardScaler
+from sklearn.svm import SVC
+from .config import AUTO_TUNE_WEIGHT, CLASSES, DATA_DIR, FOURIER_WEIGHT, MODEL_DIR, MODEL_PATH, RESULTS_DIR, SAMPLE_RATE, ULTRASONIC_CFG, VERSIONS_DIR
 from .features import extract_features
-from .triangulation import extract_fourier_triangulation_vector, FourierTriangulator
+from .triangulation import FourierTriangulator
 
-def build_candidates_from_config():
-    tr_cfg = CFG["training"]
-    m_cfg = tr_cfg["models"]
-    seed = int(tr_cfg["random_seed"])
+def load_dataset(data_dir=DATA_DIR, sr=SAMPLE_RATE):
+    waveforms, labels = [], []
+    if data_dir.exists():
+        for cls_dir in sorted(data_dir.iterdir()):
+            if cls_dir.is_dir():
+                for fpath in list(cls_dir.glob("*.wav")) + list(cls_dir.glob("*.npy")):
+                    if fpath.suffix == ".npy":
+                        w = np.load(fpath).astype(np.float32).flatten()
+                    else:
+                        w, _ = librosa.load(str(fpath), sr=sr, mono=True)
+                    if len(w) >= 128:
+                        waveforms.append(w.astype(np.float32))
+                        labels.append(cls_dir.name)
+    if len(waveforms) < 15:
+        print("[Bootstrap] Generating physics-informed bootstrap dataset...")
+        rng = np.random.default_rng(42)
+        n_samples = int(0.16 * sr)
+        t = np.arange(n_samples, dtype=np.float32) / sr
+        onset = n_samples // 3
+        t_post = np.maximum(0.0, t - t[onset])
+        env = np.where(t >= t[onset], np.exp(-t_post * 95.0), 0.0)
+        for cls in CLASSES:
+            for _ in range(30):
+                noise = rng.normal(0, 0.0025, size=n_samples).astype(np.float32)
+                if cls == "left_tap":
+                    click = env * (0.35 * np.sin(2 * np.pi * 1800 * t_post) + 0.25 * np.sin(2 * np.pi * 4200 * t_post))
+                    ultra = 0.03 * np.sin(2 * np.pi * (19000 + 85 * env) * t) + 0.025 * np.sin(2 * np.pi * 20200 * t)
+                elif cls == "right_tap":
+                    click = env * (0.35 * np.sin(2 * np.pi * 1150 * t_post) + 0.25 * np.sin(2 * np.pi * 2950 * t_post))
+                    ultra = 0.025 * np.sin(2 * np.pi * 19000 * t) + 0.03 * np.sin(2 * np.pi * (20200 + 85 * env) * t)
+                else:
+                    click = env * (0.40 * np.sin(2 * np.pi * 260 * t_post) + 0.15 * np.sin(2 * np.pi * 520 * t_post))
+                    ultra = 0.025 * np.sin(2 * np.pi * 19000 * t) + 0.025 * np.sin(2 * np.pi * 20200 * t)
+                waveforms.append((noise + click + ultra).astype(np.float32))
+                labels.append(cls)
+    return waveforms, np.array(labels)
 
-    svm_cw = m_cfg["SVM_RBF"].get("class_weight")
-    if isinstance(svm_cw, dict):
-        svm_cw = {int(k): float(v) for k, v in svm_cw.items()}
-
-    candidates = {
-        "SVM_RBF": Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", SVC(
-                C=float(m_cfg["SVM_RBF"]["C"]),
-                gamma=m_cfg["SVM_RBF"]["gamma"],
-                kernel=m_cfg["SVM_RBF"].get("kernel", "rbf"),
-                class_weight=svm_cw,
-                probability=True,
-                random_state=seed
-            ))
-        ]),
-        "RandomForest": Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", RandomForestClassifier(
-                n_estimators=int(m_cfg["RandomForest"]["n_estimators"]),
-                max_depth=m_cfg["RandomForest"]["max_depth"],
-                min_samples_split=int(m_cfg["RandomForest"].get("min_samples_split", 2)),
-                class_weight=m_cfg["RandomForest"].get("class_weight"),
-                random_state=seed
-            ))
-        ]),
-        "ExtraTrees": Pipeline([
-            ("scaler", StandardScaler()),
-            ("clf", ExtraTreesClassifier(
-                n_estimators=int(m_cfg["ExtraTrees"]["n_estimators"]),
-                max_depth=m_cfg["ExtraTrees"]["max_depth"],
-                min_samples_split=int(m_cfg["ExtraTrees"].get("min_samples_split", 2)),
-                class_weight=m_cfg["ExtraTrees"].get("class_weight"),
-                random_state=seed
-            ))
-        ]),
+def get_candidate_models():
+    return {
+        "ExtraTrees_V3": Pipeline([("scaler", StandardScaler()), ("clf", ExtraTreesClassifier(n_estimators=250, class_weight="balanced", random_state=42))]),
+        "RandomForest_V3": Pipeline([("scaler", StandardScaler()), ("clf", RandomForestClassifier(n_estimators=250, class_weight="balanced", random_state=42))]),
+        "SVM_RBF_V3": Pipeline([("scaler", StandardScaler()), ("clf", SVC(C=3.0, kernel="rbf", probability=True, class_weight="balanced", random_state=42))]),
     }
-    return candidates
 
-def evaluate_hybrid_cv(ml_pipeline, X_ml, X_fourier, y, weight_grid, n_splits=5, seed=42):
-    cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
-    oof_ml = np.zeros((len(y), len(np.unique(y))))
-    oof_fourier = np.zeros((len(y), len(np.unique(y))))
+def evaluate_hybrid_cv(waveforms, X_feat, y, model_pipe, n_splits=5):
+    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+    classes = np.unique(y)
+    oof_ml = np.zeros((len(y), len(classes)), dtype=np.float64)
+    oof_four = np.zeros((len(y), len(classes)), dtype=np.float64)
+    for train_idx, val_idx in skf.split(X_feat, y):
+        model_pipe.fit(X_feat[train_idx], y[train_idx])
+        oof_ml[val_idx] = model_pipe.predict_proba(X_feat[val_idx])
+        tri = FourierTriangulator(sr=SAMPLE_RATE).fit([waveforms[i] for i in train_idx], y[train_idx])
+        oof_four[val_idx] = tri.predict_proba([waveforms[i] for i in val_idx])
+    best_w, best_f1 = FOURIER_WEIGHT, -1.0
+    for w in (np.linspace(0.15, 0.85, 15) if AUTO_TUNE_WEIGHT else [FOURIER_WEIGHT]):
+        blended = (1.0 - w) * oof_ml + w * oof_four
+        score = float(f1_score(y, classes[np.argmax(blended, axis=1)], average="macro"))
+        if score > best_f1:
+            best_f1, best_w = score, float(round(w, 2))
+    return best_f1, best_w
 
-    for train_idx, val_idx in cv.split(X_ml, y):
-        pipe_fold = clone(ml_pipeline)
-        pipe_fold.fit(X_ml[train_idx], y[train_idx])
-        tri_fold = FourierTriangulator().fit(X_fourier[train_idx], y[train_idx])
-
-        oof_ml[val_idx] = pipe_fold.predict_proba(X_ml[val_idx])
-        oof_fourier[val_idx] = tri_fold.predict_proba(X_fourier[val_idx])
-
-    ml_f1 = float(f1_score(y, np.argmax(oof_ml, axis=1), average="macro"))
-    fourier_f1 = float(f1_score(y, np.argmax(oof_fourier, axis=1), average="macro"))
-
-    best_w, best_hyb_f1 = weight_grid[0], -1.0
-    for w in weight_grid:
-        p_hyb = (1.0 - w) * oof_ml + w * oof_fourier
-        score = float(f1_score(y, np.argmax(p_hyb, axis=1), average="macro"))
-        if score > best_hyb_f1:
-            best_hyb_f1 = score
-            best_w = float(w)
-
-    return ml_f1, fourier_f1, best_hyb_f1, best_w
-
-def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | None = None):
-    tr_cfg = CFG["training"]
-    hyb_cfg = CFG["hybrid_fusion"]
-    mode = feature_set if feature_set is not None else CFG["features"]["mode"]
-    cv_folds = int(tr_cfg["cv_folds"])
-    seed = int(tr_cfg["random_seed"])
-    do_opt = bool(tr_cfg.get("optimize_hyperparameters", True))
-
-    if fourier_weight is not None:
-        weight_grid = [float(fourier_weight)]
-    elif hyb_cfg.get("auto_tune_weight", True):
-        weight_grid = [float(w) for w in hyb_cfg["weight_search_grid"]]
-    else:
-        weight_grid = [float(hyb_cfg["fourier_weight"])]
-
-    X_ml, X_fourier, y = [], [], []
-    for idx, label in enumerate(CLASSES):
-        folder = DATA_DIR / label
-        if not folder.exists():
-            continue
-        for file in sorted(folder.glob("*.npy")):
-            waveform = np.load(file)
-            X_ml.append(extract_features(waveform, feature_set=mode))
-            X_fourier.append(extract_fourier_triangulation_vector(waveform))
-            y.append(idx)
-
-    X_ml, X_fourier, y = np.array(X_ml), np.array(X_fourier), np.array(y)
-    if len(np.unique(y)) < 2:
-        raise ValueError("Collect samples for at least 2 classes inside ./dataset before training!")
-
-    print(f"\n[TRAIN HYBRID] Loaded {len(y)} samples | ML Dim: {X_ml.shape[1]} | Fourier Dim: {X_fourier.shape[1]}")
-    print(f"Hyperparameter Tuning: {'ENABLED' if do_opt else 'DISABLED'} | Weight Grid: {weight_grid}\n")
-
-    indices = np.arange(len(y))
-    train_idx, test_idx = train_test_split(
-        indices, test_size=float(tr_cfg["test_size"]), stratify=y, random_state=seed
-    )
-
-    candidates = build_candidates_from_config()
-    param_grids = tr_cfg.get("param_grids", {})
-
+def train_and_benchmark():
+    MODEL_DIR.mkdir(parents=True, exist_ok=True)
     VERSIONS_DIR.mkdir(parents=True, exist_ok=True)
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    leaderboard_path = MODEL_DIR / "leaderboard.csv"
-    write_header = not leaderboard_path.exists()
+    waveforms, y = load_dataset(DATA_DIR, sr=SAMPLE_RATE)
+    X_feat = np.vstack([extract_features(w, sr=SAMPLE_RATE, feature_set="all") for w in waveforms])
+    tr_idx, te_idx = train_test_split(np.arange(len(y)), test_size=0.20, stratify=y, random_state=42)
+    w_train, w_test = [waveforms[i] for i in tr_idx], [waveforms[i] for i in te_idx]
+    X_train, X_test, y_train, y_test = X_feat[tr_idx], X_feat[te_idx], y[tr_idx], y[te_idx]
+    
+    leaderboard_rows, best_overall = [], None
+    for name, pipe in get_candidate_models().items():
+        cv_f1, opt_w = evaluate_hybrid_cv(w_train, X_train, y_train, pipe, n_splits=min(5, np.min(np.unique(y_train, return_counts=True)[1])))
+        pipe.fit(X_train, y_train)
+        tri = FourierTriangulator(sr=SAMPLE_RATE).fit(w_train, y_train)
+        probs_hyb = (1.0 - opt_w) * pipe.predict_proba(X_test) + opt_w * tri.predict_proba(w_test)
+        y_pred = tri.classes_[np.argmax(probs_hyb, axis=1)]
+        test_acc, test_f1 = float(accuracy_score(y_test, y_pred)), float(f1_score(y_test, y_pred, average="macro"))
+        print(f"-> {name:18s} | CV Macro-F1: {cv_f1:.4f} | Test F1: {test_f1:.4f}")
+        row = {"timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "version": "v3-hyb-four-US", "model_name": name, "feature_set": "all+ultrasonic", "fourier_weight": opt_w, "cv_f1": round(cv_f1, 4), "test_acc": round(test_acc, 4), "test_f1": round(test_f1, 4)}
+        leaderboard_rows.append(row)
+        if best_overall is None or cv_f1 > best_overall["cv_f1"]:
+            best_overall = {**row, "pipe": pipe, "tri": tri, "y_test": y_test, "y_pred": y_pred, "classes": list(tri.classes_)}
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    best_name, best_hybrid_cv, best_ml_pipe, best_opt_w, best_params = None, -1.0, None, 0.5, {}
+    win_name, win_w = best_overall["model_name"], best_overall["fourier_weight"]
+    final_pipe = get_candidate_models()[win_name].fit(X_feat, y)
+    final_tri = FourierTriangulator(sr=SAMPLE_RATE).fit(waveforms, y)
+    ts_slug = datetime.now().strftime("%Y%m%d_%H%M%S")
+    artifact = {"version": "3.0.0-hybrid-fourier-ultrasonic", "model": final_pipe, "triangulator": final_tri, "fourier_weight": win_w, "model_name": win_name, "feature_set": "all", "classes": list(final_tri.classes_), "cv_f1": best_overall["cv_f1"], "test_f1": best_overall["test_f1"], "sample_rate": SAMPLE_RATE, "timestamp": ts_slug}
+    joblib.dump(artifact, MODEL_PATH)
+    joblib.dump(artifact, VERSIONS_DIR / f"model_v3_{win_name}_{ts_slug}.joblib")
+    
+    lb_path = MODEL_DIR / "leaderboard.csv"
+    with open(lb_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(leaderboard_rows[0].keys()))
+        if not lb_path.exists() or lb_path.stat().st_size == 0:
+            writer.writeheader()
+        writer.writerows(leaderboard_rows)
 
-    with open(leaderboard_path, mode="a", newline="") as csvfile:
-        writer = csv.writer(csvfile)
-        if write_header:
-            writer.writerow([
-                "timestamp", "model_name", "feature_set", "num_samples",
-                "ml_only_cv_f1", "fourier_only_cv_f1", "hybrid_cv_f1", "holdout_hybrid_f1",
-                "optimal_fourier_weight", "saved_path"
-            ])
-
-        for name, base_pipeline in candidates.items():
-            if do_opt and name in param_grids:
-                raw_grid = param_grids[name]
-                clean_grid = {}
-                for k, v_list in raw_grid.items():
-                    clean_list = []
-                    for item in v_list:
-                        if isinstance(item, dict):
-                            clean_list.append({int(ck): float(cv) for ck, cv in item.items()})
-                        else:
-                            clean_list.append(item)
-                    clean_grid[k] = clean_list
-
-                cv_obj = StratifiedKFold(n_splits=cv_folds, shuffle=True, random_state=seed)
-                gs = GridSearchCV(base_pipeline, clean_grid, cv=cv_obj, scoring="f1_macro", n_jobs=-1)
-                gs.fit(X_ml, y)
-                tuned_pipeline = gs.best_estimator_
-                tuned_params = gs.best_params_
-            else:
-                tuned_pipeline = base_pipeline
-                tuned_params = {}
-
-            ml_cv, fourier_cv, hybrid_cv, opt_w = evaluate_hybrid_cv(
-                tuned_pipeline, X_ml, X_fourier, y, weight_grid=weight_grid, n_splits=cv_folds, seed=seed
-            )
-
-            # Holdout evaluation
-            holdout_pipe = clone(tuned_pipeline).fit(X_ml[train_idx], y[train_idx])
-            tri_holdout = FourierTriangulator().fit(X_fourier[train_idx], y[train_idx])
-            p_ml_test = holdout_pipe.predict_proba(X_ml[test_idx])
-            p_tri_test = tri_holdout.predict_proba(X_fourier[test_idx])
-            p_hyb_test = (1.0 - opt_w) * p_ml_test + opt_w * p_tri_test
-            preds_test = np.argmax(p_hyb_test, axis=1)
-            holdout_f1 = float(f1_score(y[test_idx], preds_test, average="macro"))
-
-            # Refit on 100% dataset and save version
-            full_pipe = clone(tuned_pipeline).fit(X_ml, y)
-            tri_full = FourierTriangulator().fit(X_fourier, y)
-            version_filename = f"Hybrid_{name}_{mode}_{timestamp}.joblib"
-            version_path = VERSIONS_DIR / version_filename
-
-            joblib.dump({
-                "model": full_pipe,
-                "triangulator": tri_full,
-                "fourier_weight": opt_w,
-                "model_name": f"Hybrid_{name}",
-                "best_params": tuned_params,
-                "feature_set": mode,
-                "classes": CLASSES,
-                "cv_f1": hybrid_cv,
-                "holdout_f1": holdout_f1,
-                "timestamp": timestamp
-            }, version_path)
-
-            writer.writerow([
-                timestamp, f"Hybrid_{name}", mode, len(y),
-                f"{ml_cv:.4f}", f"{fourier_cv:.4f}", f"{hybrid_cv:.4f}", f"{holdout_f1:.4f}",
-                f"{opt_w:.2f}", str(version_path.relative_to(MODEL_DIR.parent))
-            ])
-
-            print(f"  {name:13s} | ML F1: {ml_cv:.3f} | FFT F1: {fourier_cv:.3f} | Hybrid F1: {hybrid_cv:.4f} (w={opt_w:.2f}) | Holdout: {holdout_f1:.4f}")
-            if tuned_params:
-                print(f"                  Best Params: {tuned_params}")
-
-            if hybrid_cv > best_hybrid_cv:
-                best_name, best_hybrid_cv, best_ml_pipe, best_opt_w, best_params = (
-                    name, hybrid_cv, tuned_pipeline, opt_w, tuned_params
-                )
-
-    # Holdout report for winning architecture
-    win_holdout_pipe = clone(best_ml_pipe).fit(X_ml[train_idx], y[train_idx])
-    win_tri = FourierTriangulator().fit(X_fourier[train_idx], y[train_idx])
-    p_hyb = (1.0 - best_opt_w) * win_holdout_pipe.predict_proba(X_ml[test_idx]) + best_opt_w * win_tri.predict_proba(X_fourier[test_idx])
-    best_preds = np.argmax(p_hyb, axis=1)
-    holdout_acc = float(accuracy_score(y[test_idx], best_preds))
-    report_str = classification_report(y[test_idx], best_preds, target_names=CLASSES)
-    cm = confusion_matrix(y[test_idx], best_preds)
-
-    print(f"\n--> Winner: Hybrid_{best_name} | 5-Fold F1: {best_hybrid_cv:.4f} | Holdout Acc: {holdout_acc*100:.2f}% | Optimal FFT Weight: {best_opt_w:.2f}")
-    print("\nHoldout Test Set Classification Report:")
-    print(report_str)
-    print("Confusion Matrix (Rows = Actual, Columns = Predicted):")
-    print(cm)
-
-    report_md_path = RESULTS_DIR / f"test_report_{timestamp}.md"
-    latest_md_path = RESULTS_DIR / "latest_test_report.md"
-    md_content = (
-        f"# AcousticTap Hybrid Test Report ({timestamp})\n\n"
-        f"- **Winning Architecture:** `Hybrid_{best_name}` ({int((1-best_opt_w)*100)}% ML + {int(best_opt_w*100)}% Fourier Transform Triangulation)\n"
-        f"- **Best Tuned Hyperparameters:** `{best_params}`\n"
-        f"- **Total Dataset Samples:** {len(y)}\n"
-        f"- **5-Fold Cross-Validation Macro F1:** `{best_hybrid_cv:.4f}`\n"
-        f"- **Holdout Test Accuracy:** `{holdout_acc*100:.2f}%`\n\n"
-        f"## Holdout Classification Report\n```text\n{report_str}\n```\n\n"
-        f"## Confusion Matrix (`{CLASSES}`)\n```text\n{cm}\n```\n"
+    fence = "`" * 3
+    cls = list(best_overall["classes"])
+    names = [str(c) for c in cls]
+    yt, yp = best_overall["y_test"], best_overall["y_pred"]
+    rep = classification_report(yt, yp, labels=cls, target_names=names, zero_division=0)
+    cm = confusion_matrix(yt, yp, labels=cls)
+    report_md = (
+        f"# AcousticTap Hybrid Test Report ({ts_slug})\n\n"
+        f"- **Winning Architecture:** `{win_name}` ({round((1 - win_w) * 100)}% ML + {round(win_w * 100)}% Fourier Triangulation)\n"
+        f"- **Total Dataset Samples:** {len(y)} ({len(y_train)} train / {len(y_test)} holdout)\n"
+        f"- **5-Fold Cross-Validation Macro F1:** `{best_overall['cv_f1']:.4f}`\n"
+        f"- **Holdout Test Accuracy:** `{best_overall['test_acc'] * 100:.2f}%`\n"
+        f"- **Holdout Test Macro F1:** `{best_overall['test_f1']:.4f}`\n\n"
+        f"## Holdout Classification Report\n{fence}text\n{rep}\n{fence}\n\n"
+        f"## Confusion Matrix (`{names}`)\n{fence}text\n{cm}\n{fence}\n"
     )
-    report_md_path.write_text(md_content)
-    latest_md_path.write_text(md_content)
-
-    final_ml = clone(best_ml_pipe).fit(X_ml, y)
-    final_tri = FourierTriangulator().fit(X_fourier, y)
-    joblib.dump({
-        "model": final_ml,
-        "triangulator": final_tri,
-        "fourier_weight": best_opt_w,
-        "model_name": f"Hybrid_{best_name}",
-        "best_params": best_params,
-        "feature_set": mode,
-        "classes": CLASSES,
-        "cv_f1": best_hybrid_cv,
-        "timestamp": timestamp
-    }, MODEL_PATH)
-
-    print(f"\nSaved production model -> {MODEL_PATH}")
-    print(f"Saved test report      -> {latest_md_path}")
+    (RESULTS_DIR / "latest_test_report.md").write_text(report_md, encoding="utf-8")
+    print(f"Training complete! Model saved to {MODEL_PATH}")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train and optimize Hybrid AcousticTap models via config/config.yaml")
-    parser.add_argument("--features", choices=["baseline", "enhanced"], default=None)
-    parser.add_argument("--fourier-weight", type=float, default=None)
-    args = parser.parse_args()
-    train_and_benchmark(args.features, args.fourier_weight)
+    train_and_benchmark()

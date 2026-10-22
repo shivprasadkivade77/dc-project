@@ -11,3 +11,21 @@ timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,sav
 20261019_165703,Hybrid_SVM_RBF,enhanced,589,0.8822,0.7427,0.8771,0.8879,0.50,models/versions/Hybrid_SVM_RBF_enhanced_20261019_165703.joblib
 20261019_165703,Hybrid_RandomForest,enhanced,589,0.8890,0.7427,0.8591,0.8891,0.50,models/versions/Hybrid_RandomForest_enhanced_20261019_165703.joblib
 20261019_165703,Hybrid_ExtraTrees,enhanced,589,0.9022,0.7427,0.8392,0.8804,0.50,models/versions/Hybrid_ExtraTrees_enhanced_20261019_165703.joblib
+2026-10-21 17:24:24,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8731,0.9576,0.9581
+2026-10-21 17:24:26,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8712,0.9492,0.9492
+2026-10-21 17:24:28,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8635,0.9153,0.9145
+2026-10-21 17:25:22,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8731,0.9576,0.9581
+2026-10-21 17:25:25,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8712,0.9492,0.9492
+2026-10-21 17:25:26,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8635,0.9153,0.9145
+2026-10-21 17:36:10,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8731,0.9576,0.9581
+2026-10-21 17:36:13,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8712,0.9492,0.9492
+2026-10-21 17:36:14,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8635,0.9153,0.9145
+2026-10-23 00:43:05,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.9017,0.9167,0.918
+2026-10-23 00:43:13,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8867,0.9345,0.9344
+2026-10-23 00:43:17,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.2,0.8747,0.881,0.8839
+2026-10-23 00:43:55,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.9017,0.9167,0.918
+2026-10-23 00:44:03,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8867,0.9345,0.9344
+2026-10-23 00:44:08,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.2,0.8747,0.881,0.8839
+2026-10-23 00:55:59,v3-hyb-four-US,ExtraTrees_V3,all+ultrasonic,0.15,0.8984,0.9286,0.9291
+2026-10-23 00:56:07,v3-hyb-four-US,RandomForest_V3,all+ultrasonic,0.15,0.8832,0.9286,0.9291
+2026-10-23 00:56:12,v3-hyb-four-US,SVM_RBF_V3,all+ultrasonic,0.15,0.8767,0.875,0.8776

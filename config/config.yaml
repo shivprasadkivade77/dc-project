@@ -1,110 +1,50 @@
-# =====================================================================
-# AcousticTap Master Configuration (config/config.yaml)
-# Edit any value here to tune detection, features, models, or shortcuts
-# without touching the Python source code.
-# =====================================================================
+project:
+  name: "AcousticTap-Holo"
+  version: "3.0.0-hybrid-fourier-ultrasonic"
 
 audio:
-  sample_rate: 44100
-  block_size: 512               # 512 samples ≈ 11.6 ms per block
-  pre_blocks: 3                 # Blocks captured BEFORE impact spike
-  post_blocks: 8                # Blocks captured AFTER impact spike
-  cooldown_blocks: 25           # Cooldown blocks (~290 ms) to prevent double triggers
-  channels: "auto"              # "auto", 1 (mono), or 2 (stereo)
+  sample_rate: 48000
+  block_size: 512
+  pre_blocks: 6
+  post_blocks: 10
+  cooldown_blocks: 25
+  rms_threshold: 0.004
+  dynamic_multiplier: 2.0
+  lowpass_cutoff_hz: 16000.0
 
-detector:
-  rms_threshold: 0.02          # Base microphone RMS trigger threshold
-  peak_multiplier: 1.8          # Peak amplitude must exceed rms_threshold * peak_multiplier
-  bg_snr_ratio: 2.3             # RMS must exceed rolling background floor * bg_snr_ratio
-  bg_ema_alpha: 0.95            # Exponential moving average decay for background noise floor
+ultrasonic:
+  enabled: true
+  left_freq_hz: 19000.0
+  right_freq_hz: 20200.0
+  speaker_amplitude: 0.03
+  carrier_bw_hz: 25.0
+  doppler_min_hz: 25.0
+  doppler_max_hz: 180.0
+  alpha_doppler: 0.65
+  gate_threshold: 2.0
+  gate_steepness: 2.5
+  calibration_blocks: 35
 
-signal_window:
-  search_start_samples: 256     # Start index when locking onto microsecond peak
-  search_end_margin: 1024       # Margin from end of buffer when searching for peak
-  pre_noise_guard_samples: 96   # Samples before peak excluded from background noise floor
-  onset_pre_peak_samples: 32    # Samples before peak included in onset/wake window
-  onset_length_samples: 256     # Direct ballistic wave window length (256 ≈ 5.8 ms)
-  wake_length_samples: 1024     # Cavity resonance wake window length (1024 ≈ 23.2 ms)
+classes:
+  - "left_tap"
+  - "right_tap"
+  - "noise"
+
+fusion:
+  fourier_weight: 0.50
+  auto_tune_weight: true
+  ultrasonic_2fa_enabled: true
 
 features:
-  mode: "enhanced"              # "baseline" or "enhanced"
-  n_mfcc: 20                    # Number of MFCC coefficients
-  n_fft: 256                    # STFT window length for MFCCs
-  hop_length: 64                # STFT hop length for MFCCs
-  onset_frames: 3               # Number of initial STFT frames treated as impact attack
+  default_set: "all"
+  n_mfcc: 13
 
-fourier_triangulation:
-  num_bands: 12                 # Number of log-spaced FFT spatial resonance bands
-  freq_min_hz: 150.0            # Minimum frequency for spatial FFT bands
-  freq_max_hz: 16000.0          # Maximum frequency for spatial FFT bands
-  hf_band_hz: [3000.0, 14000.0] # High-frequency flexural Lamb wave band
-  lf_band_hz: [150.0, 900.0]    # Low-frequency flexural Lamb wave band
-  gcc_max_lag_samples: 20       # Max stereo sample delay for GCC-PHAT cross-correlation
-  lda_solver: "lsqr"            # "lsqr" or "eigen"
-  lda_shrinkage: "auto"         # "auto" or float between 0.0 and 1.0
-  lda_weight: 0.65              # Weight of LDA vs Cosine Similarity (1 - lda_weight) inside Fourier module
-  cosine_temperature: 2.5       # Softmax sharpness for spectral template matching
-
-hybrid_fusion:
-  fourier_weight: 0.50          # Default weight (0.50 = 50% Fourier + 50% ML)
-  auto_tune_weight: true        # Automatically sweep weights during train.py to find best F1
-  weight_search_grid: [0.20, 0.30, 0.40, 0.50, 0.60, 0.70]
-
-training:
-  classes: ["left_tap", "right_tap", "noise"]
+models:
+  random_state: 42
   cv_folds: 5
   test_size: 0.20
-  random_seed: 42
-  optimize_hyperparameters: true  # Run GridSearchCV over parameter grids below
-
-  # Default hyperparameters (used when optimize_hyperparameters is false)
-  models:
-    SVM_RBF:
-      C: 15.0
-      gamma: "scale"
-      kernel: "rbf"
-      # Boost left_tap weight slightly to stop left_tap from being misclassified as noise
-      class_weight:
-        0: 1.25   # left_tap
-        1: 1.00   # right_tap
-        2: 1.00   # noise
-    RandomForest:
-      n_estimators: 250
-      max_depth: 14
-      min_samples_split: 2
-      class_weight: "balanced"
-    ExtraTrees:
-      n_estimators: 250
-      max_depth: null
-      min_samples_split: 2
-      class_weight: "balanced"
-
-  # Grid search spaces (used when optimize_hyperparameters is true)
-  param_grids:
-    SVM_RBF:
-      clf__C: [5.0, 10.0, 20.0, 50.0]
-      clf__gamma: ["scale", "auto", 0.01, 0.03]
-      clf__class_weight:
-        - null
-        - "balanced"
-        - {0: 1.3, 1: 1.0, 2: 1.0}
-    RandomForest:
-      clf__n_estimators: [150, 300]
-      clf__max_depth: [10, 16, null]
-      clf__class_weight: ["balanced", null]
-    ExtraTrees:
-      clf__n_estimators: [150, 300]
-      clf__max_depth: [12, 20, null]
-      clf__class_weight: ["balanced", null]
 
 listener:
-  default_confidence: 0.65
-  # Per-class confidence thresholds (lower left_tap threshold slightly to boost recall)
-  class_thresholds:
-    left_tap: 0.58
-    right_tap: 0.68
-  typing_suppression_seconds: 0.15
-  os_modifier_key: "ctrl"       # Use "ctrl" on Ubuntu/Linux, "cmd" on macOS
-  shortcuts:
-    left_tap: "c"               # Triggers Ctrl+C on Ubuntu
-    right_tap: "v"              # Triggers Ctrl+V on Ubuntu
+  confidence_threshold: 0.58
+  snr_gate_db: 6.0
+  enable_shortcuts: false
