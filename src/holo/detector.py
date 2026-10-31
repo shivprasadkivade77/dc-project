@@ -44,7 +44,7 @@ class ImpulseDetector:
         if self.cooldown > 0:
             self.cooldown -= 1
             self.pre_buffer.append(block)
-            self.bg_rms = self.ema_alpha * self.bg_rms + (1.0 - self.ema_alpha) * rms
+            # Do NOT update bg_rms during cooldown to avoid absorbing chassis reverberation
             return
 
         if self.capturing:
@@ -61,7 +61,8 @@ class ImpulseDetector:
             dynamic_thresh = max(self.threshold, self.bg_rms * self.bg_snr_ratio)
             if rms > dynamic_thresh and peak > (self.threshold * self.peak_mult):
                 self.capturing = True
-                self.captured_blocks = list(self.pre_buffer) + [block]
+                pad_blocks = [np.zeros_like(block) for _ in range(self.pre_blocks - len(self.pre_buffer))]
+                self.captured_blocks = pad_blocks + list(self.pre_buffer) + [block]
             else:
                 self.pre_buffer.append(block)
                 self.bg_rms = self.ema_alpha * self.bg_rms + (1.0 - self.ema_alpha) * rms

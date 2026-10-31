@@ -18,9 +18,10 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
 
     max_val = np.max(np.abs(wake)) + 1e-8
     norm_wake = (wake / max_val).astype(np.float32)
+    norm_onset = (onset / max_val).astype(np.float32)
 
     mfccs = librosa.feature.mfcc(
-        y=norm_wake, sr=sr, n_mfcc=20, n_fft=N_FFT, hop_length=HOP_LENGTH
+        y=norm_wake, sr=sr, n_mfcc=20, n_fft=N_FFT, hop_length=HOP_LENGTH, n_mels=40
     )
     onset_mfcc = np.mean(mfccs[:, :3], axis=1)
     decay_mfcc = np.mean(mfccs[:, 3:], axis=1)
@@ -34,11 +35,14 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
         flatness = librosa.feature.spectral_flatness(y=norm_wake, n_fft=N_FFT, hop_length=HOP_LENGTH)
         zcr = librosa.feature.zero_crossing_rate(y=norm_wake, frame_length=N_FFT, hop_length=HOP_LENGTH)
 
+        rms_norm_wake = float(np.sqrt(np.mean(norm_wake ** 2)) + 1e-8)
+        crest_factor = float(1.0 / rms_norm_wake)
+        decay_tail = norm_wake[256:] if len(norm_wake) > 256 else norm_wake
+        attack_decay_ratio = float(np.log10((np.mean(norm_onset ** 2) + 1e-8) / (np.mean(decay_tail ** 2) + 1e-8)))
+
         rms_wake = float(np.sqrt(np.mean(wake ** 2)) + 1e-8)
         rms_pre = float(np.sqrt(np.mean(pre_noise ** 2)) + 1e-8)
-        snr_db = np.log10((rms_wake / rms_pre) + 1e-8)
-        crest_factor = float(max_val / rms_wake)
-        attack_decay_ratio = float(np.log10((np.mean(onset ** 2) + 1e-8) / (np.mean(wake[256:]) ** 2) + 1e-8))
+        snr_db = float(np.log10((rms_wake / rms_pre) + 1e-8))
 
         features.extend([
             np.mean(centroid, axis=1), np.std(centroid, axis=1),
@@ -49,4 +53,3 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: O
         ])
 
     return np.concatenate(features)
-    

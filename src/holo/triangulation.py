@@ -3,6 +3,24 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.preprocessing import StandardScaler
 from .config import CFG, SAMPLE_RATE
 
+def make_onset_window(length: int, peak_offset: int = 32) -> np.ndarray:
+    """
+    Creates an asymmetric onset-preserving window.
+    - [0 : peak_offset]: Smooth rising cosine taper from 0 to 1, reaching 1.0 right at peak_offset.
+    - [peak_offset : length]: Smooth decaying cosine taper from 1 down to 0 at the window end.
+    This guarantees that the transient direct-wave impact spike at peak_offset receives
+    full 1.0 gain (100% transmission), while preventing boundary truncation artifacts.
+    """
+    w = np.ones(length, dtype=np.float64)
+    if peak_offset > 0:
+        rise = 0.5 * (1.0 - np.cos(np.pi * np.arange(peak_offset) / max(1, peak_offset)))
+        w[:peak_offset] = rise
+    tail_len = length - peak_offset
+    if tail_len > 0:
+        fall = 0.5 * (1.0 + np.cos(np.pi * np.arange(tail_len) / max(1, tail_len)))
+        w[peak_offset:] = fall
+    return w
+
 def align_and_slice_waveform(waveform: np.ndarray):
     win_cfg = CFG["signal_window"]
     s_start_cfg = int(win_cfg["search_start_samples"])
@@ -19,8 +37,14 @@ def align_and_slice_waveform(waveform: np.ndarray):
     search_end = max(search_start + 512, len(mono) - s_end_margin)
     peak_idx = search_start + int(np.argmax(np.abs(mono[search_start:search_end])))
 
-    noise_end = max(128, peak_idx - pre_guard)
+    # Ensure pre_noise strictly never includes or overlaps the peak transient
+    if peak_idx > pre_guard + 32:
+        noise_end = min(256, peak_idx - pre_guard)
+    else:
+        noise_end = max(16, peak_idx // 2) if peak_idx > 16 else max(1, peak_idx)
     pre_noise = mono[:noise_end]
+    if len(pre_noise) == 0:
+        pre_noise = np.array([1e-6], dtype=np.float64)
 
     onset_start = max(0, peak_idx - pre_peak)
     onset = mono[onset_start : onset_start + onset_len]
@@ -36,6 +60,8 @@ def align_and_slice_waveform(waveform: np.ndarray):
 
 def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_RATE) -> np.ndarray:
     ft_cfg = CFG["fourier_triangulation"]
+    win_cfg = CFG["signal_window"]
+    pre_peak = int(win_cfg.get("onset_pre_peak_samples", 32))
     num_bands = int(ft_cfg["num_bands"])
     f_min = float(ft_cfg["freq_min_hz"])
     f_max = float(ft_cfg["freq_max_hz"])
@@ -46,8 +72,12 @@ def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_
     mono, peak_idx, pre_noise, onset, wake = align_and_slice_waveform(waveform)
 
     peak_amp = np.max(np.abs(wake)) + 1e-8
-    norm_onset = (onset / peak_amp) * np.hanning(len(onset))
-    norm_wake = (wake / peak_amp) * np.hanning(len(wake))
+    peak_offset = min(pre_peak, peak_idx)
+    onset_window = make_onset_window(len(onset), peak_offset=peak_offset)
+    wake_window = make_onset_window(len(wake), peak_offset=peak_offset)
+
+    norm_onset = (onset / peak_amp) * onset_window
+    norm_wake = (wake / peak_amp) * wake_window
 
     fft_onset = np.fft.rfft(norm_onset)
     mag_onset = np.abs(fft_onset) + 1e-8
@@ -91,8 +121,12 @@ def extract_fourier_triangulation_vector(waveform: np.ndarray, sr: int = SAMPLE_
     snr_db = float(10.0 * np.log10((np.mean(onset ** 2) + 1e-10) / (np.mean(pre_noise ** 2) + 1e-10)))
 
     if waveform.ndim == 2 and waveform.shape[1] >= 2:
-        ch_l = waveform[max(0, peak_idx - 32) : max(0, peak_idx - 32) + 512, 0]
-        ch_r = waveform[max(0, peak_idx - 32) : max(0, peak_idx - 32) + 512, 1]
+        start_idx = max(0, peak_idx - 32)
+        ch_l = waveform[start_idx : start_idx + 512, 0]
+        ch_r = waveform[start_idx : start_idx + 512, 1]
+        if len(ch_l) < 512:
+            ch_l = np.pad(ch_l, (0, 512 - len(ch_l)))
+            ch_r = np.pad(ch_r, (0, 512 - len(ch_r)))
         F_l = np.fft.rfft(ch_l, n=1024)
         F_r = np.fft.rfft(ch_r, n=1024)
         cross_spec = F_l * np.conj(F_r)
