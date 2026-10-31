@@ -1,4 +1,5 @@
 import time
+import platform
 import argparse
 from pathlib import Path
 import numpy as np
@@ -10,40 +11,57 @@ from .detector import ImpulseDetector
 from .features import extract_features
 
 def run_listener(model_file: Path, threshold: float, confidence_min: float, dry_run: bool):
+    if not model_file.exists():
+        raise FileNotFoundError(f"Model file not found at {model_file}. Run train first.")
+
     saved = joblib.load(model_file)
     model = saved["model"]
     model_name = saved.get("model_name", "CustomModel")
     feature_set = saved["feature_set"]
     classes = saved["classes"]
 
+    is_macos = platform.system() == "Darwin"
+    mod_key = keyboard.Key.cmd if is_macos else keyboard.Key.ctrl
+    mod_name = "Cmd" if is_macos else "Ctrl"
+
     kb_controller = keyboard.Controller()
     last_keypress_time = 0.0
     typing_suppression_window = 0.15
+    is_emitting_synthetic = False
 
     def on_press(key):
         nonlocal last_keypress_time
-        last_keypress_time = time.time()
+        if not is_emitting_synthetic:
+            last_keypress_time = time.time()
 
     kb_listener = keyboard.Listener(on_press=on_press)
     kb_listener.start()
 
     def trigger_macro(action_label: str):
+        nonlocal is_emitting_synthetic
         if dry_run:
-            print(f"  [DRY-RUN] Would have triggered shortcut for: {action_label}")
+            print(f"  [DRY-RUN] Would have triggered shortcut for: {action_label} ({mod_name}+C/V)")
             return
-        if action_label == "left_tap":
-            print("  >>> ACTION: Left Palm Rest -> Copy (Cmd+C)")
-            with kb_controller.pressed(keyboard.Key.cmd):
-                kb_controller.tap("c")
-        elif action_label == "right_tap":
-            print("  >>> ACTION: Right Palm Rest -> Paste (Cmd+V)")
-            with kb_controller.pressed(keyboard.Key.cmd):
-                kb_controller.tap("v")
+
+        is_emitting_synthetic = True
+        try:
+            if action_label == "left_tap":
+                print(f"  >>> ACTION: Left Palm Rest -> Copy ({mod_name}+C)")
+                with kb_controller.pressed(mod_key):
+                    kb_controller.tap("c")
+            elif action_label == "right_tap":
+                print(f"  >>> ACTION: Right Palm Rest -> Paste ({mod_name}+V)")
+                with kb_controller.pressed(mod_key):
+                    kb_controller.tap("v")
+        finally:
+            time.sleep(0.02)
+            is_emitting_synthetic = False
 
     detector = ImpulseDetector(threshold=threshold)
-    mode_label = "DRY-RUN TEST MODE" if dry_run else "LIVE MACRO MODE"
+    mode_label = "DRY-RUN TEST MODE" if dry_run else f"LIVE MACRO MODE ({mod_name.upper()})"
     print(f"\n[LISTEN - {mode_label}] Loaded {model_name} ({feature_set} features) from {model_file.name}")
-    print(f"Confidence Threshold: {confidence_min:.2f} | Tap left or right palm rest. Press Ctrl+C to stop.\n")
+    print(f"OS: {platform.system()} (Modifier: {mod_name}) | Confidence Threshold: {confidence_min:.2f}")
+    print("Tap left or right palm rest. Press Ctrl+C to stop.\n")
 
     with sd.InputStream(
         samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE, channels=1, callback=detector.audio_callback
@@ -68,13 +86,12 @@ def run_listener(model_file: Path, threshold: float, confidence_min: float, dry_
 
             if pred_label != "noise" and confidence >= confidence_min:
                 trigger_macro(pred_label)
-                last_keypress_time = time.time()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test or run a trained AcousticTap model")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to a .joblib model file")
     parser.add_argument("--threshold", type=float, default=RMS_THRESHOLD, help="Mic RMS trigger threshold")
     parser.add_argument("--confidence", type=float, default=0.75, help="Minimum confidence to trigger")
-    parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing macOS shortcuts")
+    parser.add_argument("--dry-run", action="store_true", help="Test predictions without firing shortcuts")
     args = parser.parse_args()
     run_listener(args.model, args.threshold, args.confidence, args.dry_run)
