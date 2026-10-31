@@ -3,7 +3,7 @@ import librosa
 from .config import SAMPLE_RATE
 
 def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: str = "enhanced") -> np.ndarray:
-    """Normalizes the tap waveform and extracts a 67-dimensional acoustic feature vector."""
+    """Normalizes the tap waveform and extracts a scale-invariant 67-dimensional acoustic feature vector."""
     max_val = np.max(np.abs(waveform))
     norm_wave = waveform / (max_val + 1e-8)
 
@@ -26,7 +26,8 @@ def extract_features(waveform: np.ndarray, sr: int = SAMPLE_RATE, feature_set: s
         zcr = librosa.feature.zero_crossing_rate(
             y=norm_wave, frame_length=n_fft, hop_length=hop_length
         )
-        log_energy = np.array([np.log10(np.mean(waveform ** 2) + 1e-8)])
+        # Scale-invariant normalized energy (measures impulse concentration, invariant to strike loudness)
+        log_energy = np.array([np.log10(np.mean(norm_wave ** 2) + 1e-8)])
 
         features.extend([
             np.mean(delta_mfcc, axis=1),
