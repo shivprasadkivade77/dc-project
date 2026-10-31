@@ -266,9 +266,13 @@ def train_and_benchmark(feature_set: str | None = None, fourier_weight: float | 
     print(f"\nSaved production model -> {MODEL_PATH}")
     print(f"Saved test report      -> {latest_md_path}")
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train and optimize Hybrid AcousticTap models via config/config.yaml")
-    parser.add_argument("--features", choices=["baseline", "enhanced"], default=None)
+    parser.add_argument("--features", "--feature-set", dest="features", choices=["baseline", "enhanced"], default=None)
     parser.add_argument("--fourier-weight", type=float, default=None)
+    return parser
+
+if __name__ == "__main__":
+    parser = build_parser()
     args = parser.parse_args()
     train_and_benchmark(args.features, args.fourier_weight)

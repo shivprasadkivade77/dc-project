@@ -55,10 +55,14 @@ def evaluate_saved_model(model_file: Path, target_dir: Path = DATA_DIR, holdout_
     print("Confusion Matrix:")
     print(confusion_matrix(y, preds))
 
-if __name__ == "__main__":
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate any saved .joblib model on a dataset")
     parser.add_argument("--model", type=Path, default=MODEL_PATH, help="Path to .joblib model file")
-    parser.add_argument("--data-dir", type=Path, default=DATA_DIR, help="Path to evaluation dataset directory")
+    parser.add_argument("--data-dir", "--dataset", dest="data_dir", type=Path, default=DATA_DIR, help="Path to evaluation dataset directory")
     parser.add_argument("--holdout-only", action="store_true", help="Evaluate strictly on the isolated test partition")
+    return parser
+
+if __name__ == "__main__":
+    parser = build_parser()
     args = parser.parse_args()
     evaluate_saved_model(args.model, args.data_dir, args.holdout_only)

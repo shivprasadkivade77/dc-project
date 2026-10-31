@@ -1,16 +1,20 @@
 import time
+import platform
 import argparse
 from pathlib import Path
 import numpy as np
 import sounddevice as sd
 import joblib
 from pynput import keyboard
-from .config import CFG, SAMPLE_RATE, BLOCK_SIZE, MODEL_PATH
+from .config import CFG, SAMPLE_RATE, BLOCK_SIZE, RMS_THRESHOLD, MODEL_PATH
 from .detector import ImpulseDetector, get_input_channels
 from .features import extract_features
 from .triangulation import extract_fourier_triangulation_vector
 
 def run_listener(model_file: Path, threshold: float | None, confidence_min: float | None, dry_run: bool):
+    if not model_file.exists():
+        raise FileNotFoundError(f"Model file not found at {model_file}. Run train first.")
+
     saved = joblib.load(model_file)
     model = saved["model"]
     triangulator = saved.get("triangulator", None)
@@ -20,40 +24,56 @@ def run_listener(model_file: Path, threshold: float | None, confidence_min: floa
     classes = saved["classes"]
     channels = get_input_channels()
 
-    lis_cfg = CFG["listener"]
+    lis_cfg = CFG.get("listener", {})
     default_conf = float(confidence_min if confidence_min is not None else lis_cfg.get("default_confidence", 0.65))
     class_thresholds = lis_cfg.get("class_thresholds", {})
     typing_suppression_window = float(lis_cfg.get("typing_suppression_seconds", 0.15))
 
-    mod_name = str(lis_cfg.get("os_modifier_key", "ctrl")).lower()
-    mod_key = keyboard.Key.cmd if mod_name == "cmd" else keyboard.Key.ctrl
+    cfg_mod = str(lis_cfg.get("os_modifier_key", "auto")).lower()
+    is_macos = platform.system() == "Darwin"
+    if cfg_mod == "cmd" or (cfg_mod == "auto" and is_macos):
+        mod_key = keyboard.Key.cmd
+        mod_name = "Cmd"
+    else:
+        mod_key = keyboard.Key.ctrl
+        mod_name = "Ctrl"
+
     shortcuts_map = lis_cfg.get("shortcuts", {"left_tap": "c", "right_tap": "v"})
 
     kb_controller = keyboard.Controller()
     last_keypress_time = 0.0
+    is_emitting_synthetic = False
 
     def on_press(key):
         nonlocal last_keypress_time
-        last_keypress_time = time.time()
+        if not is_emitting_synthetic:
+            last_keypress_time = time.time()
 
     kb_listener = keyboard.Listener(on_press=on_press)
     kb_listener.start()
 
     def trigger_macro(action_label: str):
+        nonlocal is_emitting_synthetic
         target_key = shortcuts_map.get(action_label)
         if not target_key:
             return
         if dry_run:
-            print(f"  [DRY-RUN] Would trigger {mod_name.upper()}+{target_key.upper()} for: {action_label}")
+            print(f"  [DRY-RUN] Would trigger {mod_name}+{target_key.upper()} for: {action_label}")
             return
-        print(f"  >>> ACTION: {action_label} -> {mod_name.upper()}+{target_key.upper()}")
-        with kb_controller.pressed(mod_key):
-            kb_controller.tap(target_key)
+        print(f"  >>> ACTION: {action_label} -> {mod_name}+{target_key.upper()}")
+        is_emitting_synthetic = True
+        try:
+            with kb_controller.pressed(mod_key):
+                kb_controller.tap(target_key)
+        finally:
+            time.sleep(0.02)
+            is_emitting_synthetic = False
 
     detector = ImpulseDetector(threshold=threshold)
     mode_label = "DRY-RUN TEST MODE" if dry_run else f"LIVE MACRO MODE ({mod_name.upper()})"
-    print(f"\n[LISTEN - {mode_label}] Loaded {model_name} from {model_file.name}")
-    print(f"Fusion: {int((1-fourier_weight)*100)}% ML + {int(fourier_weight*100)}% Fourier | Thresholds: {class_thresholds} (Default: {default_conf:.2f})")
+    print(f"\n[LISTEN - {mode_label}] Loaded {model_name} from {model_file.name} (Channels: {channels})")
+    print(f"OS: {platform.system()} (Modifier: {mod_name}) | Fusion: {int((1-fourier_weight)*100)}% ML + {int(fourier_weight*100)}% Fourier")
+    print(f"Thresholds: {class_thresholds} (Default: {default_conf:.2f})")
     print("Tap left or right palm rest. Press Ctrl+C to stop.\n")
 
     with sd.InputStream(
@@ -91,7 +111,6 @@ def run_listener(model_file: Path, threshold: float | None, confidence_min: floa
 
             if pred_label != "noise" and confidence >= req_conf:
                 trigger_macro(pred_label)
-                last_keypress_time = time.time()
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Test or run AcousticTap listener configured via config/config.yaml")

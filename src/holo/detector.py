@@ -5,7 +5,7 @@ import sounddevice as sd
 from .config import CFG
 
 def get_input_channels() -> int:
-    ch_cfg = CFG["audio"].get("channels", "auto")
+    ch_cfg = CFG["audio"].get("channels", 1)
     if ch_cfg != "auto":
         return int(ch_cfg)
     try:

@@ -1,10 +1,10 @@
-timestamp,model_name,feature_set,num_samples,cv_f1_mean,cv_f1_std,holdout_f1,saved_path
-20261018_213356,RandomForest,enhanced,150,0.7829,0.0645,0.8667,models/versions/RandomForest_enhanced_20261018_213356.joblib
-20261018_213356,ExtraTrees,enhanced,150,0.8053,0.0640,0.8667,models/versions/ExtraTrees_enhanced_20261018_213356.joblib
-20261018_213356,SVM_RBF,enhanced,150,0.7538,0.0714,0.8359,models/versions/SVM_RBF_enhanced_20261018_213356.joblib
-20261019_152054,Hybrid_RandomForest,enhanced,314,0.8615,0.7013,0.8359,0.8312,models/versions/Hybrid_RandomForest_enhanced_20261019_152054.joblib
-20261019_152054,Hybrid_ExtraTrees,enhanced,314,0.8895,0.7013,0.8359,0.8459,models/versions/Hybrid_ExtraTrees_enhanced_20261019_152054.joblib
-20261019_152054,Hybrid_SVM_RBF,enhanced,314,0.8708,0.7013,0.8549,0.8312,models/versions/Hybrid_SVM_RBF_enhanced_20261019_152054.joblib
+timestamp,model_name,feature_set,num_samples,ml_only_cv_f1,fourier_only_cv_f1,hybrid_cv_f1,holdout_hybrid_f1,optimal_fourier_weight,saved_path
+20261018_213356,RandomForest,enhanced,150,0.7829,N/A,0.7829,0.8667,0.00,models/versions/RandomForest_enhanced_20261018_213356.joblib
+20261018_213356,ExtraTrees,enhanced,150,0.8053,N/A,0.8053,0.8667,0.00,models/versions/ExtraTrees_enhanced_20261018_213356.joblib
+20261018_213356,SVM_RBF,enhanced,150,0.7538,N/A,0.7538,0.8359,0.00,models/versions/SVM_RBF_enhanced_20261018_213356.joblib
+20261019_152054,Hybrid_RandomForest,enhanced,314,0.8615,0.7013,0.8359,0.8312,0.50,models/versions/Hybrid_RandomForest_enhanced_20261019_152054.joblib
+20261019_152054,Hybrid_ExtraTrees,enhanced,314,0.8895,0.7013,0.8359,0.8459,0.50,models/versions/Hybrid_ExtraTrees_enhanced_20261019_152054.joblib
+20261019_152054,Hybrid_SVM_RBF,enhanced,314,0.8708,0.7013,0.8549,0.8312,0.50,models/versions/Hybrid_SVM_RBF_enhanced_20261019_152054.joblib
 20261019_164256,Hybrid_SVM_RBF,enhanced,314,0.8738,0.6982,0.8523,0.8427,0.50,models/versions/Hybrid_SVM_RBF_enhanced_20261019_164256.joblib
 20261019_164256,Hybrid_RandomForest,enhanced,314,0.8651,0.6982,0.8303,0.8312,0.50,models/versions/Hybrid_RandomForest_enhanced_20261019_164256.joblib
 20261019_164256,Hybrid_ExtraTrees,enhanced,314,0.8864,0.6982,0.8268,0.8283,0.50,models/versions/Hybrid_ExtraTrees_enhanced_20261019_164256.joblib

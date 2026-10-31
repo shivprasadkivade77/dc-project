@@ -10,7 +10,7 @@ audio:
   pre_blocks: 3                 # Blocks captured BEFORE impact spike
   post_blocks: 8                # Blocks captured AFTER impact spike
   cooldown_blocks: 25           # Cooldown blocks (~290 ms) to prevent double triggers
-  channels: "auto"              # "auto", 1 (mono), or 2 (stereo)
+  channels: 1                   # Default 1 (mono) for Mac and single-channel hardware; set 2 for stereo
 
 detector:
   rms_threshold: 0.02          # Base microphone RMS trigger threshold
@@ -104,7 +104,7 @@ listener:
     left_tap: 0.58
     right_tap: 0.68
   typing_suppression_seconds: 0.15
-  os_modifier_key: "ctrl"       # Use "ctrl" on Ubuntu/Linux, "cmd" on macOS
+  os_modifier_key: "auto"       # "auto" picks "cmd" on macOS, "ctrl" on Windows/Linux; can override with "cmd" or "ctrl"
   shortcuts:
-    left_tap: "c"               # Triggers Ctrl+C on Ubuntu
-    right_tap: "v"              # Triggers Ctrl+V on Ubuntu
+    left_tap: "c"               # Triggers Cmd+C (macOS) or Ctrl+C (Windows/Linux)
+    right_tap: "v"              # Triggers Cmd+V (macOS) or Ctrl+V (Windows/Linux)
